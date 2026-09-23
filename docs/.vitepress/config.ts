@@ -5,6 +5,8 @@ export default defineConfig({
   description:
     'Static WCA results API generator with a REST router and response caching.',
   lang: 'en-US',
+  // GitHub Pages project site: https://<user>.github.io/wca-data-router/
+  base: process.env.DOCS_BASE ?? '/wca-data-router/',
   cleanUrls: true,
   themeConfig: {
     nav: [
