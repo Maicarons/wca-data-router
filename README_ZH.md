@@ -1,6 +1,6 @@
 # WCA Data Router
 
-[![CI](https://github.com/<owner>/<repo>/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![CI](https://github.com/Maicarons/wca-data-router/actions/workflows/ci.yml/badge.svg)](https://github.com/Maicarons/wca-data-router/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 > 非官方世界魔方协会（WCA）**静态 JSON API** 生成器 + **REST 路由服务**（带响应缓存）。

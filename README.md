@@ -1,6 +1,6 @@
 # WCA Data Router
 
-[![CI](https://github.com/<owner>/<repo>/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![CI](https://github.com/Maicarons/wca-data-router/actions/workflows/ci.yml/badge.svg)](https://github.com/Maicarons/wca-data-router/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 > Unofficial World Cube Association (WCA) **static JSON API** generator and **REST router** with response caching.

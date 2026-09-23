@@ -2,7 +2,7 @@
 
 The full API contract is published as **OpenAPI 3.0**:
 
-- Source: [`docs/openapi.yml`](https://github.com/) in this repository
+- Source: [`docs/openapi.yml`](https://github.com/Maicarons/wca-data-router/blob/main/docs/openapi.yml) in this repository
 - Live JSON (when the router is running): `GET /openapi.json`
 - Static copy for tooling: copy `openapi.yml` from `docs/` (also under `docs/public/` after docs build)
 
