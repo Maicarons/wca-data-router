@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build / generated data (published to the `api` branch by CI)
+# Leading slash = repo root only (do not ignore docs/api/)
+dist/
+/api/
+/api-fixture/
+/.work/
+/.work-fixture/
+/work/
+/export/
+*.tsv
+*.tsv.zip
+WCA_export*.zip
+!packages/builder/test/fixtures/**
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Docs build
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
+# Test / coverage
+coverage/
+*.tsbuildinfo
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Local reference clones (not part of the project)
+/ref/
+
+# Scratch files from local smoke tests
+person.json
+p-tmp.json
+*.tmp

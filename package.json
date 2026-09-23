@@ -1,0 +1,24 @@
+{
+  "name": "wca-data-router",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "build": "bun run --filter '*' build",
+    "build:api": "bun run --filter @wca/builder build",
+    "dev:router": "bun run --filter @wca/router dev",
+    "start:router": "bun run --filter @wca/router start",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
+    "test": "bun test",
+    "typecheck": "bun run --filter '*' typecheck",
+    "check": "bun run typecheck && bun test"
+  },
+  "devDependencies": {
+    "vitepress": "^1.5.0"
+  }
+}

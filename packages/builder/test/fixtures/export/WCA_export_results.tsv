@@ -1,0 +1,5 @@
+id	person_id	pos	person_name	country_id	competition_id	event_id	round_type_id	format_id	regional_single_record	regional_average_record	best	average
+1	2012TEST01	1	Test Person	Poland	Comp2024	333	f	a	NR		500	600
+2	2013TEST02	2	Other Person	Belgium	Comp2024	333	f	a		PR	700	800
+3	2012TEST01	1	Test Person	Poland	WC2023	333	f	a	WR	WR	400	500
+4	2012TEST01	1	Test Person	Poland	WC2023	222	f	a			300	350

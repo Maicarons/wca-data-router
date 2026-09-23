@@ -1,0 +1,86 @@
+name: Build Static API
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily after WCA export refresh window (UTC)
+    - cron: '30 11 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-api
+  cancel-in-progress: false
+
+jobs:
+  build-api:
+    name: Build and publish api branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Detect new export
+        id: detect
+        run: |
+          set -euo pipefail
+          NEW_EXPORT=$(curl -fsSL https://www.worldcubeassociation.org/api/v0/export/public)
+          echo "$NEW_EXPORT" | tee /tmp/export-public.json
+          NEW_DATE=$(echo "$NEW_EXPORT" | bun -e 'const d=JSON.parse(await Bun.stdin.text()); console.log(d.export_date || d.exportDate || "")')
+          CURRENT_DATE=""
+          if git ls-remote --exit-code origin api >/dev/null 2>&1; then
+            CURRENT_DATE=$(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/api/version.json" | bun -e 'const d=JSON.parse(await Bun.stdin.text()); console.log(d.export_date || "")' || echo "")
+          fi
+          echo "NEW_DATE=$NEW_DATE"
+          echo "CURRENT_DATE=$CURRENT_DATE"
+          echo "new_date=$NEW_DATE" >> "$GITHUB_OUTPUT"
+          if [ -n "$CURRENT_DATE" ] && [ "$NEW_DATE" = "$CURRENT_DATE" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build static API
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          bun run --filter @wca/builder build -- --out api --work .work --force
+
+      - name: Smoke-check artifacts
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          test -f api/version.json
+          test -f api/manifest.json
+          test -f api/continents.json
+          test -f api/persons.json
+          bun -e '
+            const v = await Bun.file("api/version.json").json();
+            const m = await Bun.file("api/manifest.json").json();
+            console.log("export_date", v.export_date);
+            console.log("resources", m.resources);
+            if (!v.export_date) process.exit(1);
+          '
+
+      - name: Publish api orphan branch (static deployable)
+        if: steps.detect.outputs.changed == 'true'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./api
+          publish_branch: api
+          force_orphan: true
+          enable_jekyll: true
+          commit_message: 'chore: update static API ${{ steps.detect.outputs.new_date }}'
+
+      - name: Skip notice
+        if: steps.detect.outputs.changed == 'false'
+        run: echo "No new WCA export, skip publishing."

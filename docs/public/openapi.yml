@@ -1,0 +1,1295 @@
+openapi: 3.0.3
+info:
+  title: WCA Data Router API
+  version: 0.1.0
+  description: |
+    Unofficial World Cube Association (WCA) **static JSON API** and **REST router**.
+
+    ## Data sources
+
+    - **Static files** — pre-generated JSON under an `api/` tree (GitHub `api` branch, CDN, or disk).
+    - **REST router** (`/v1/...`) — friendly paths, query filters, paging, and response caching over the same files.
+
+    ## List envelope
+
+    Every collection response uses:
+
+    ```json
+    {
+      "pagination": { "page": 1, "size": 1000 },
+      "total": 3465,
+      "items": []
+    }
+    ```
+
+    Default `size` is **1000**. `page` is 1-based.
+
+    ## Query filters
+
+    `/v1/competitions` supports single-dimension filters that map to precomputed static slices
+    (`country`, `year`, `year+month`, `year+month+day`, `event`). When several filters are sent,
+    the router resolves **one** slice by priority (see the endpoint description). Combined
+    multi-dimension intersection is not a pure static path.
+
+    ## Caching
+
+    Router responses may include `X-Cache: HIT|MISS` and `Cache-Control`.
+    Cache lives in the router process (no shared external cache service).
+
+    ## Attribution
+
+    This information is based on competition results owned and maintained by the
+    World Cube Association, published at https://www.worldcubeassociation.org/export/results.
+    This project is not affiliated with the official WCA software team.
+  contact:
+    name: wca-data-router
+    url: https://github.com/
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: http://localhost:3000
+    description: Local router
+  - url: https://raw.githubusercontent.com/{owner}/{repo}/api
+    description: Static files only (path ends with .json — see /api/static)
+    variables:
+      owner:
+        default: your-org
+      repo:
+        default: wca-data-router
+
+tags:
+  - name: meta
+    description: Health, version, and build metadata
+  - name: general
+    description: Reference lists (continents, countries, events)
+  - name: competition
+    description: Competitions and filtered collections
+  - name: championship
+    description: Championship competitions
+  - name: person
+    description: Competitors
+  - name: rank
+    description: Rankings (static files expose top 1000)
+  - name: result
+    description: Round results
+  - name: static
+    description: |
+      Direct static JSON paths (no router). Paths are relative to the static root
+      and end with `.json`. These work on GitHub raw / Pages / CDN / nginx without any server code.
+
+paths:
+  /health:
+    get:
+      tags: [meta]
+      operationId: getHealth
+      summary: Health check
+      description: Process health and cache statistics for the router.
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, source, cache]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  source:
+                    type: string
+                    description: Resolved static source description
+                    example: local:/var/www/wca-api
+                  cache:
+                    type: object
+                    properties:
+                      entries:
+                        type: integer
+                        example: 12
+                      bytes:
+                        type: integer
+                        example: 1048576
+
+  /openapi.json:
+    get:
+      tags: [meta]
+      operationId: getOpenApi
+      summary: OpenAPI document
+      responses:
+        '200':
+          description: OpenAPI 3 document
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /v1/version:
+    get:
+      tags: [meta]
+      operationId: getVersion
+      summary: Export version metadata
+      description: WCA export identity used to generate the current dataset.
+      responses:
+        '200':
+          description: Version info
+          headers:
+            X-Cache:
+              description: Router cache result
+              schema:
+                type: string
+                enum: [HIT, MISS]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionInfo'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/manifest:
+    get:
+      tags: [meta]
+      operationId: getManifest
+      summary: Build manifest
+      description: Counts and generation metadata for the static tree.
+      responses:
+        '200':
+          description: Manifest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Manifest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/continents:
+    get:
+      tags: [general]
+      operationId: getContinents
+      summary: List continents
+      responses:
+        '200':
+          description: Continents overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContinentsOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/countries:
+    get:
+      tags: [general]
+      operationId: getCountries
+      summary: List countries
+      responses:
+        '200':
+          description: Countries overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountriesOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/events:
+    get:
+      tags: [general]
+      operationId: getEvents
+      summary: List events
+      responses:
+        '200':
+          description: Events overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/competitions:
+    get:
+      tags: [competition]
+      operationId: getCompetitions
+      summary: List competitions (optional filters)
+      description: |
+        Returns competitions. Filters map to **precomputed static slices**.
+
+        Resolution priority when multiple filters are present:
+        1. `country`
+        2. `year` + `month` + `day`
+        3. `year` + `month`
+        4. `year`
+        5. `event`
+
+        Only one slice is served. `page` / `size` re-paginate that slice in the router.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: country
+          in: query
+          description: ISO2 country code (see `/v1/countries`)
+          schema:
+            type: string
+            example: BE
+        - name: year
+          in: query
+          description: Four-digit year
+          schema:
+            type: string
+            pattern: '^[0-9]{4}$'
+            example: '2023'
+        - name: month
+          in: query
+          description: Two-digit month (`01`–`12`). Requires `year`.
+          schema:
+            type: string
+            pattern: '^(0[1-9]|1[0-2])$'
+            example: '08'
+        - name: day
+          in: query
+          description: Two-digit day (`01`–`31`). Requires `year` and `month`.
+          schema:
+            type: string
+            pattern: '^(0[1-9]|[12][0-9]|3[01])$'
+            example: '13'
+        - name: event
+          in: query
+          description: Event id (see `/v1/events`)
+          schema:
+            type: string
+            example: '333'
+      responses:
+        '200':
+          description: Competitions overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompetitionsOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/competitions/{id}:
+    get:
+      tags: [competition]
+      operationId: getCompetitionByIdOrToken
+      summary: Competition by id, or collection for year / country / event tokens
+      description: |
+        - 4-digit token (`2023`) → competitions in that year (collection)
+        - Known country ISO2 (`BE`) → competitions in that country (collection)
+        - Known event id (`333`) → competitions that held the event (collection)
+        - Otherwise → single competition resource
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Competition id, year, country ISO2, or event id
+          schema:
+            type: string
+            example: BrizZonSylwesterOpen2022
+      responses:
+        '200':
+          description: Competition object or competitions overview
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Competition'
+                  - $ref: '#/components/schemas/CompetitionsOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/championships:
+    get:
+      tags: [championship]
+      operationId: getChampionships
+      summary: List championships
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: type
+          in: query
+          description: "Championship region: `world`, a continent slug (e.g. `europe`), or a country ISO2 (e.g. `BE`)"
+          schema:
+            type: string
+            example: world
+      responses:
+        '200':
+          description: Championships overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChampionshipsOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/championships/{id}:
+    get:
+      tags: [championship]
+      operationId: getChampionshipById
+      summary: Championship by competition id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: WC2023
+      responses:
+        '200':
+          description: Championship detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Championship'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/persons:
+    get:
+      tags: [person]
+      operationId: getPersons
+      summary: List person summaries
+      description: |
+        Summaries only (`id`, `name`, `slug`, `country`, counts, medals).
+        Full profiles (ranks, nested results) are at `/v1/persons/{id}`.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Persons overview (summaries)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonsOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/persons/{id}:
+    get:
+      tags: [person]
+      operationId: getPersonById
+      summary: Person profile by WCA ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: WCA ID
+          schema:
+            type: string
+            example: 2012PARK03
+      responses:
+        '200':
+          description: Full person profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Person'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/ranks/{region}/{type}/{eventId}:
+    get:
+      tags: [rank]
+      operationId: getRanks
+      summary: Rankings by region, type, and event
+      description: |
+        Static payloads contain at most the **top 1000** rows for the slice.
+        A person's full rank table is embedded in `/v1/persons/{id}`.
+      parameters:
+        - name: region
+          in: path
+          required: true
+          description: "`world`, continent slug, or country ISO2"
+          schema:
+            type: string
+            example: world
+        - name: type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [single, average]
+            example: single
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: '333'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Ranks overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RanksOverview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/results/{competitionId}:
+    get:
+      tags: [result]
+      operationId: getResultsByCompetition
+      summary: Results for a competition
+      parameters:
+        - name: competitionId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: BrizZonSylwesterOpen2022
+      responses:
+        '200':
+          description: Results overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultsOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/results/{competitionId}/{eventId}:
+    get:
+      tags: [result]
+      operationId: getResultsByCompetitionAndEvent
+      summary: Results for a competition and event
+      parameters:
+        - name: competitionId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: BrizZonSylwesterOpen2022
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: '333'
+      responses:
+        '200':
+          description: Results overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultsOverview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /static/version.json:
+    get:
+      tags: [static]
+      operationId: staticVersion
+      summary: version.json
+      description: Same payload as `GET /v1/version` as a static file.
+      responses:
+        '200':
+          description: Version info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionInfo'
+
+  /static/manifest.json:
+    get:
+      tags: [static]
+      operationId: staticManifest
+      summary: manifest.json
+      responses:
+        '200':
+          description: Manifest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Manifest'
+
+  /static/continents.json:
+    get:
+      tags: [static]
+      operationId: staticContinents
+      summary: continents.json
+      responses:
+        '200':
+          description: Continents overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContinentsOverview'
+
+  /static/countries.json:
+    get:
+      tags: [static]
+      operationId: staticCountries
+      summary: countries.json
+      responses:
+        '200':
+          description: Countries overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountriesOverview'
+
+  /static/events.json:
+    get:
+      tags: [static]
+      operationId: staticEvents
+      summary: events.json
+      responses:
+        '200':
+          description: Events overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsOverview'
+
+  /static/competitions.json:
+    get:
+      tags: [static]
+      operationId: staticCompetitions
+      summary: competitions.json (page 1)
+      description: |
+        Paged collections also emit `competitions-page-{n}.json` for n ≥ 2.
+        Filters:
+        - `competitions/{ISO2}.json`
+        - `competitions/{year}.json`
+        - `competitions/{year}/{month}.json`
+        - `competitions/{year}/{month}/{day}.json`
+        - `competitions/{eventId}.json` (+ `competitions/{eventId}-page-{n}.json`)
+        - `competitions/{id}.json`
+      responses:
+        '200':
+          description: Competitions overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompetitionsOverview'
+
+  /static/championships.json:
+    get:
+      tags: [static]
+      operationId: staticChampionships
+      summary: championships.json (page 1)
+      description: |
+        Also: `championships-page-{n}.json`, `championships/{id}.json`,
+        `championships/{type}.json` where type is `world` | continent slug | country ISO2.
+      responses:
+        '200':
+          description: Championships overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChampionshipsOverview'
+
+  /static/persons.json:
+    get:
+      tags: [static]
+      operationId: staticPersons
+      summary: persons.json (summaries, page 1)
+      description: |
+        Also: `persons-page-{n}.json`, `persons/{wcaId}.json` (full profile).
+        Optional sharded layout: `persons/shard/{xx}/{wcaId}.json`.
+      responses:
+        '200':
+          description: Persons overview (summaries)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonsOverview'
+
+  /static/persons/{wcaId}.json:
+    get:
+      tags: [static]
+      operationId: staticPersonById
+      summary: persons/{wcaId}.json
+      parameters:
+        - name: wcaId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: 2012PARK03
+      responses:
+        '200':
+          description: Full person profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Person'
+
+  /static/rank/{region}/{type}/{eventId}.json:
+    get:
+      tags: [static]
+      operationId: staticRank
+      summary: rank/{region}/{type}/{event}.json
+      parameters:
+        - name: region
+          in: path
+          required: true
+          schema:
+            type: string
+            example: world
+        - name: type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [single, average]
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: '333'
+      responses:
+        '200':
+          description: Ranks overview (top 1000)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RanksOverview'
+
+  /static/results/{competitionId}.json:
+    get:
+      tags: [static]
+      operationId: staticResultsByCompetition
+      summary: results/{competitionId}.json
+      parameters:
+        - name: competitionId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: WC2023
+      responses:
+        '200':
+          description: Results overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultsOverview'
+
+  /static/results/{competitionId}/{eventId}.json:
+    get:
+      tags: [static]
+      operationId: staticResultsByCompetitionEvent
+      summary: results/{competitionId}/{eventId}.json
+      parameters:
+        - name: competitionId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: WC2023
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: '333'
+      responses:
+        '200':
+          description: Results overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultsOverview'
+
+components:
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: 1-based page number
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+        example: 1
+    Size:
+      name: size
+      in: query
+      description: Page size (default 1000 for pre-paged static lists)
+      schema:
+        type: integer
+        minimum: 1
+        default: 1000
+        example: 1000
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: NOT_FOUND
+              message: "person '2012NOPE01' not found"
+              resource: person
+              id: '2012NOPE01'
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: BAD_REQUEST
+              message: "type must be 'single' or 'average'"
+
+  schemas:
+    Pagination:
+      type: object
+      required: [page, size]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+          example: 1
+        size:
+          type: integer
+          minimum: 1
+          example: 1000
+
+    OverviewMeta:
+      type: object
+      required: [pagination, total, items]
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        total:
+          type: integer
+          description: Total items in the collection (not only this page)
+          example: 3465
+        items:
+          type: array
+          items: {}
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [NOT_FOUND, BAD_REQUEST, INTERNAL]
+            message:
+              type: string
+            resource:
+              type: string
+            id:
+              type: string
+
+    VersionInfo:
+      type: object
+      required: [export_date, export_format_version, attribution]
+      properties:
+        export_date:
+          type: string
+          format: date-time
+          example: '2026-09-23T14:05:46+00:00'
+        export_format_version:
+          type: string
+          example: 2.0.2
+        sql_url:
+          type: string
+          format: uri
+          nullable: true
+        tsv_url:
+          type: string
+          format: uri
+          nullable: true
+        generated_at:
+          type: string
+          format: date-time
+          nullable: true
+        attribution:
+          type: string
+
+    Manifest:
+      type: object
+      required: [generated_at, export_date, export_format_version, resources, person_layout]
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        export_date:
+          type: string
+          format: date-time
+        export_format_version:
+          type: string
+        resources:
+          type: object
+          additionalProperties:
+            type: integer
+          example:
+            persons: 200000
+            competitions: 12000
+        person_layout:
+          type: string
+          enum: [flat, sharded]
+
+    Continent:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: Slug of the continent name
+          example: europe
+        name:
+          type: string
+          example: Europe
+
+    Country:
+      type: object
+      required: [iso2Code, name]
+      properties:
+        iso2Code:
+          type: string
+          example: BE
+        name:
+          type: string
+          example: Belgium
+
+    Event:
+      type: object
+      required: [id, name, format]
+      properties:
+        id:
+          type: string
+          example: '333'
+        name:
+          type: string
+          example: 3x3x3 Cube
+        format:
+          type: string
+          description: Result value encoding
+          enum: [time, number, multi]
+          example: time
+
+    CompetitionDate:
+      type: object
+      required: [from, till, numberOfDays]
+      properties:
+        from:
+          type: string
+          format: date
+          example: '2023-08-12'
+        till:
+          type: string
+          format: date
+          example: '2023-08-15'
+        numberOfDays:
+          type: integer
+          example: 4
+
+    Venue:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: Klub BrizZon
+        address:
+          type: string
+          nullable: true
+          example: ul. Karpia 10, 61-619 Poznań
+        details:
+          type: string
+          nullable: true
+        coordinates:
+          type: object
+          nullable: true
+          properties:
+            latitude:
+              type: number
+              format: double
+              example: 52.444748
+            longitude:
+              type: number
+              format: double
+              example: 16.948881
+
+    PersonRef:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: John Doe
+        email:
+          type: string
+          nullable: true
+          example: john-doe@worldcubeassociation.org
+
+    Competition:
+      type: object
+      required:
+        - id
+        - name
+        - city
+        - country
+        - date
+        - isCanceled
+        - events
+        - wcaDelegates
+        - organisers
+        - venue
+      properties:
+        id:
+          type: string
+          example: BrizZonSylwesterOpen2022
+        name:
+          type: string
+          example: BrizZon Sylwester Open 2022
+        city:
+          type: string
+          example: Poznań
+        country:
+          type: string
+          description: ISO2
+          example: PL
+        date:
+          $ref: '#/components/schemas/CompetitionDate'
+        isCanceled:
+          type: boolean
+          example: false
+        events:
+          type: array
+          items:
+            type: string
+            example: '333'
+        wcaDelegates:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonRef'
+        organisers:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonRef'
+        venue:
+          $ref: '#/components/schemas/Venue'
+        information:
+          type: string
+          nullable: true
+        externalWebsite:
+          type: string
+          nullable: true
+          example: https://example.com
+
+    Championship:
+      allOf:
+        - $ref: '#/components/schemas/Competition'
+        - type: object
+          required: [region]
+          properties:
+            region:
+              type: string
+              description: Slug — `world`, continent slug, or country ISO2 lowercased context
+              example: world
+
+    Medals:
+      type: object
+      required: [gold, silver, bronze]
+      properties:
+        gold:
+          type: integer
+          example: 23
+        silver:
+          type: integer
+          example: 3
+        bronze:
+          type: integer
+          example: 10
+
+    PersonSummary:
+      type: object
+      required: [id, name, slug, country, numberOfCompetitions, numberOfChampionships, medals]
+      properties:
+        id:
+          type: string
+          example: 2012PARK03
+        name:
+          type: string
+          example: Park Jiseok
+        slug:
+          type: string
+          example: park-jiseok
+        country:
+          type: string
+          example: KR
+        numberOfCompetitions:
+          type: integer
+          example: 42
+        numberOfChampionships:
+          type: integer
+          example: 2
+        medals:
+          $ref: '#/components/schemas/Medals'
+
+    PersonRankEntry:
+      type: object
+      required: [eventId, best, rank]
+      properties:
+        eventId:
+          type: string
+          example: '333'
+        best:
+          type: integer
+          description: Result value in event units (see Event.format)
+          example: 7158
+        rank:
+          type: object
+          required: [world, continent, country]
+          properties:
+            world:
+              type: integer
+              example: 1
+            continent:
+              type: integer
+              example: 1
+            country:
+              type: integer
+              example: 1
+
+    PersonResultEntry:
+      type: object
+      required: [round, position, best, average, format, solves]
+      properties:
+        round:
+          type: string
+          example: Final
+        position:
+          type: integer
+          example: 1
+        best:
+          type: integer
+          example: 7158
+        average:
+          type: integer
+          example: 8078
+        format:
+          type: string
+          example: Average of 5
+        solves:
+          type: array
+          description: |
+            Attempt values, zero-padded to length 5 for compatibility.
+            `-1` DNF, `-2` DNS, `0` empty/padding.
+          minItems: 5
+          items:
+            type: integer
+            example: 7158
+
+    RecordCounts:
+      type: object
+      additionalProperties:
+        type: integer
+      description: Map of record tag (WR / CR / NR / PR) to count
+      example:
+        WR: 3
+        NR: 2
+
+    Person:
+      allOf:
+        - $ref: '#/components/schemas/PersonSummary'
+        - type: object
+          required: [competitionIds, championshipIds, rank, records, results]
+          properties:
+            competitionIds:
+              type: array
+              items:
+                type: string
+                example: CaltechDallas2005
+            championshipIds:
+              type: array
+              items:
+                type: string
+                example: WC2011
+            rank:
+              type: object
+              required: [singles, averages]
+              properties:
+                singles:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/PersonRankEntry'
+                averages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/PersonRankEntry'
+            records:
+              type: object
+              required: [single, average]
+              properties:
+                single:
+                  $ref: '#/components/schemas/RecordCounts'
+                average:
+                  $ref: '#/components/schemas/RecordCounts'
+            results:
+              type: object
+              description: Nested as competitionId → eventId → entries
+              additionalProperties:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/PersonResultEntry'
+
+    Rank:
+      type: object
+      required: [rankType, personId, eventId, best, rank]
+      properties:
+        rankType:
+          type: string
+          enum: [single, average]
+          example: single
+        personId:
+          type: string
+          example: 2012PARK03
+        eventId:
+          type: string
+          example: '333'
+        best:
+          type: integer
+          example: 7158
+        rank:
+          type: object
+          required: [world, continent, country]
+          properties:
+            world:
+              type: integer
+              example: 1
+            continent:
+              type: integer
+              example: 1
+            country:
+              type: integer
+              example: 1
+
+    Result:
+      type: object
+      required: [competitionId, personId, eventId, round, position, best, average, format, solves]
+      properties:
+        competitionId:
+          type: string
+          example: BrizZonSylwesterOpen2022
+        personId:
+          type: string
+          example: 2012PARK03
+        eventId:
+          type: string
+          example: '333'
+        round:
+          type: string
+          example: Final
+        position:
+          type: integer
+          example: 1
+        best:
+          type: integer
+          example: 7158
+        average:
+          type: integer
+          example: 8078
+        format:
+          type: string
+          example: Average of 5
+        solves:
+          type: array
+          minItems: 5
+          items:
+            type: integer
+
+    ContinentsOverview:
+      allOf:
+        - $ref: '#/components/schemas/OverviewMeta'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Continent'
+
+    CountriesOverview:
+      allOf:
+        - $ref: '#/components/schemas/OverviewMeta'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Country'
+
+    EventsOverview:
+      allOf:
+        - $ref: '#/components/schemas/OverviewMeta'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Event'
+
+    CompetitionsOverview:
+      allOf:
+        - $ref: '#/components/schemas/OverviewMeta'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Competition'
+
+    ChampionshipsOverview:
+      allOf:
+        - $ref: '#/components/schemas/OverviewMeta'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Championship'
+
+    PersonsOverview:
+      allOf:
+        - $ref: '#/components/schemas/OverviewMeta'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/PersonSummary'
+
+    RanksOverview:
+      allOf:
+        - $ref: '#/components/schemas/OverviewMeta'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Rank'
+
+    ResultsOverview:
+      allOf:
+        - $ref: '#/components/schemas/OverviewMeta'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Result'

@@ -1,0 +1,3 @@
+id	name	cityName	countryId	information	year	month	day	endYear	endMonth	endDay	cancelled	cancelledReason	delegates	organizers	venue	venueAddress	venueDetails	externalWebsite	latitude_microdegrees	longitude_microdegrees
+Comp2024	Comp 2024	Warsaw	Poland		2024	5	1	2024	5	1	0		"John Doe <john@example.com>"	"Jane <jane@example.com>"	Hall	Street 1		https://example.com	522297000	210122000
+WC2023	World Championship 2023	Antwerp	Belgium		2023	8	12	2023	8	15	0		"Del <del@example.com>"	"Org <org@example.com>"	Stadium	Avenue 2			512194000	440246000
