@@ -53,7 +53,7 @@ jobs:
       - name: Build static API
         if: steps.detect.outputs.changed == 'true'
         run: |
-          bun run --filter @wca/builder build -- --out api --work .work --force
+          bun packages/builder/src/cli.ts build --out api --work .work --force
 
       - name: Smoke-check artifacts
         if: steps.detect.outputs.changed == 'true'

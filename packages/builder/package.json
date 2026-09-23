@@ -7,7 +7,6 @@
     "wca-build": "./src/cli.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:api": "bun src/cli.ts build",
     "dev": "bun src/cli.ts build"

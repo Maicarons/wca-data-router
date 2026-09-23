@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "bun run --filter '*' build",
-    "build:api": "bun run --filter @wca/builder build",
+    "build:api": "bun packages/builder/src/cli.ts build",
     "dev:router": "bun run --filter @wca/router dev",
     "start:router": "bun run --filter @wca/router start",
     "docs:dev": "vitepress dev docs",
