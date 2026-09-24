@@ -9,6 +9,13 @@ import { cacheKey } from './cache/keys';
 import { MemoryCache } from './cache/lru';
 import type { RouterConfig } from './config';
 import type { StaticSource } from './datasource/static-source';
+import {
+  CACHE_TTL,
+  respondJson,
+  resourcePolicy,
+  healthPolicy,
+  type CachePolicy,
+} from './http';
 import { loadOpenApiDocument } from './openapi';
 
 export interface AppDeps {
@@ -17,6 +24,11 @@ export interface AppDeps {
 }
 
 type Json = Record<string, unknown> | unknown[] | null;
+
+type Ctx = {
+  set: { status?: number | string; headers: Record<string, string> };
+  request: Request;
+};
 
 function notFoundBody(resource: string, id?: string) {
   return {
@@ -39,17 +51,28 @@ function badRequestBody(message: string) {
 }
 
 function respondNotFound(
-  set: { status?: number | string },
+  ctx: Ctx,
   resource: string,
   id?: string,
+  policy: CachePolicy = resourcePolicy(),
 ) {
-  set.status = 404;
-  return notFoundBody(resource, id);
+  ctx.set.status = 404;
+  return respondJson(ctx, {
+    body: notFoundBody(resource, id),
+    status: 404,
+    cache: 'MISS',
+    policy: { ...policy, maxAge: Math.min(policy.maxAge, 60) },
+  });
 }
 
-function respondBadRequest(set: { status?: number | string }, message: string) {
-  set.status = 400;
-  return badRequestBody(message);
+function respondBadRequest(ctx: Ctx, message: string) {
+  ctx.set.status = 400;
+  return respondJson(ctx, {
+    body: badRequestBody(message),
+    status: 400,
+    cache: 'MISS',
+    policy: { maxAge: 0, noStore: true },
+  });
 }
 
 function asOverview<T>(value: unknown): Overview<T> | null {
@@ -131,6 +154,16 @@ export function createApp(deps: AppDeps) {
     return Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1;
   }
 
+  /** Serve a static JSON payload with ETag / Cache-Control / X-Cache. */
+  function send(
+    ctx: Ctx,
+    value: Json,
+    cacheState: 'HIT' | 'MISS',
+    policy: CachePolicy,
+  ): unknown {
+    return respondJson(ctx, { body: value, cache: cacheState, policy });
+  }
+
   const app = new Elysia()
     .derive(({ set, request }) => {
       const origin = request.headers.get('origin');
@@ -141,55 +174,65 @@ export function createApp(deps: AppDeps) {
           : config.corsOrigins[0] ?? '';
       set.headers['access-control-allow-origin'] = allow;
       set.headers['access-control-allow-methods'] = 'GET,HEAD,OPTIONS';
-      set.headers['access-control-allow-headers'] = 'content-type';
+      set.headers['access-control-allow-headers'] = 'content-type,if-none-match';
+      set.headers['access-control-expose-headers'] = 'etag,x-cache,cache-control';
+      set.headers['vary'] = 'origin, accept-encoding';
       return {};
     })
     .onBeforeHandle(async () => {
       await maybeInvalidateOnVersion();
     })
     .options('/*', () => new Response(null, { status: 204 }))
-    .get('/health', () => ({
-      status: 'ok',
-      source: source.describe(),
-      cache: { entries: cache.size, bytes: cache.bytes },
-    }))
-    .get('/openapi.json', async ({ set }) => {
+    .get('/health', (ctx) => {
+      const body = {
+        status: 'ok',
+        source: source.describe(),
+        cache: { entries: cache.size, bytes: cache.bytes },
+      };
+      return respondJson(ctx as Ctx, {
+        body,
+        cache: 'MISS',
+        policy: healthPolicy(),
+      });
+    })
+    .get('/openapi.json', async (ctx) => {
       const doc = await loadOpenApiDocument();
-      set.headers['content-type'] = 'application/json; charset=utf-8';
-      return doc;
+      return respondJson(ctx as Ctx, {
+        body: doc,
+        cache: 'MISS',
+        policy: resourcePolicy(CACHE_TTL.reference),
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
     })
-    .get('/v1/version', async ({ set }) => {
+    .get('/v1/version', async (ctx) => {
       const { value, cache: c } = await loadRequired(staticPaths.version());
-      if (!value) return respondNotFound(set,'version');
-      set.headers['x-cache'] = c;
-      set.headers['cache-control'] = 'public, max-age=60';
-      return value;
+      if (!value) return respondNotFound(ctx as Ctx, 'version');
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.meta));
     })
-    .get('/v1/manifest', async ({ set }) => {
+    .get('/v1/manifest', async (ctx) => {
       const { value, cache: c } = await loadRequired(staticPaths.manifest());
-      if (!value) return respondNotFound(set,'manifest');
-      set.headers['x-cache'] = c;
-      return value;
+      if (!value) return respondNotFound(ctx as Ctx, 'manifest');
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.meta));
     })
-    .get('/v1/continents', async ({ set }) => {
+    .get('/v1/continents', async (ctx) => {
       const { value, cache: c } = await loadRequired(staticPaths.continents());
-      if (!value) return respondNotFound(set,'continents');
-      set.headers['x-cache'] = c;
-      return value;
+      if (!value) return respondNotFound(ctx as Ctx, 'continents');
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.reference));
     })
-    .get('/v1/countries', async ({ set }) => {
+    .get('/v1/countries', async (ctx) => {
       const { value, cache: c } = await loadRequired(staticPaths.countries());
-      if (!value) return respondNotFound(set,'countries');
-      set.headers['x-cache'] = c;
-      return value;
+      if (!value) return respondNotFound(ctx as Ctx, 'countries');
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.reference));
     })
-    .get('/v1/events', async ({ set }) => {
+    .get('/v1/events', async (ctx) => {
       const { value, cache: c } = await loadRequired(staticPaths.events());
-      if (!value) return respondNotFound(set,'events');
-      set.headers['x-cache'] = c;
-      return value;
+      if (!value) return respondNotFound(ctx as Ctx, 'events');
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.reference));
     })
-    .get('/v1/competitions', async ({ query, set }) => {
+    .get('/v1/competitions', async (ctx) => {
+      const { query } = ctx as unknown as {
+        query: Record<string, string | undefined>;
+      };
       await ensureLookups();
       const page = pageFrom(query);
       const size = Number(query.size ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE;
@@ -203,47 +246,48 @@ export function createApp(deps: AppDeps) {
       else if (event) path = staticPaths.competitionsByEvent(event, 1);
 
       const { value, cache: c } = await loadRequired(path);
-      if (!value) return respondNotFound(set,'competitions');
-      set.headers['x-cache'] = c;
+      if (!value) return respondNotFound(ctx as Ctx, 'competitions');
 
       const overview = asOverview<Record<string, unknown>>(value);
-      if (!overview) return value;
-      if (event || size !== DEFAULT_PAGE_SIZE || page !== 1) {
-        return paginate(overview.items, page, size);
-      }
-      return overview;
+      const body: Json =
+        overview && (event || size !== DEFAULT_PAGE_SIZE || page !== 1)
+          ? (paginate(overview.items, page, size) as unknown as Json)
+          : value;
+      return send(ctx as Ctx, body, c, resourcePolicy(CACHE_TTL.resource));
     })
-    .get('/v1/competitions/:id', async ({ params, set }) => {
+    .get('/v1/competitions/:id', async (ctx) => {
+      const { params } = ctx as unknown as { params: { id: string } };
       await ensureLookups();
       const kind = classify(params.id);
+      const policy = resourcePolicy(CACHE_TTL.resource);
+
       if (kind === 'year') {
         const { value, cache: c } = await loadRequired(staticPaths.competitionsByYear(params.id));
-        if (!value) return respondNotFound(set,'competitions', params.id);
-        set.headers['x-cache'] = c;
-        return value;
+        if (!value) return respondNotFound(ctx as Ctx, 'competitions', params.id);
+        return send(ctx as Ctx, value, c, policy);
       }
       if (kind === 'country') {
         const { value, cache: c } = await loadRequired(
           staticPaths.competitionsByCountry(params.id.toUpperCase()),
         );
-        if (!value) return respondNotFound(set,'competitions', params.id);
-        set.headers['x-cache'] = c;
-        return value;
+        if (!value) return respondNotFound(ctx as Ctx, 'competitions', params.id);
+        return send(ctx as Ctx, value, c, policy);
       }
       if (kind === 'event') {
         const { value, cache: c } = await loadRequired(
           staticPaths.competitionsByEvent(params.id, 1),
         );
-        if (!value) return respondNotFound(set,'competitions', params.id);
-        set.headers['x-cache'] = c;
-        return value;
+        if (!value) return respondNotFound(ctx as Ctx, 'competitions', params.id);
+        return send(ctx as Ctx, value, c, policy);
       }
       const { value, cache: c } = await loadRequired(staticPaths.competitionById(params.id));
-      if (!value) return respondNotFound(set,'competition', params.id);
-      set.headers['x-cache'] = c;
-      return value;
+      if (!value) return respondNotFound(ctx as Ctx, 'competition', params.id);
+      return send(ctx as Ctx, value, c, policy);
     })
-    .get('/v1/championships', async ({ query, set }) => {
+    .get('/v1/championships', async (ctx) => {
+      const { query } = ctx as unknown as {
+        query: Record<string, string | undefined>;
+      };
       const page = pageFrom(query);
       const size = Number(query.size ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE;
       const type = query.type;
@@ -251,88 +295,120 @@ export function createApp(deps: AppDeps) {
         ? staticPaths.championshipsByType(type)
         : staticPaths.championshipsPage(page);
       const { value, cache: c } = await loadRequired(path);
-      if (!value) return respondNotFound(set,'championships');
-      set.headers['x-cache'] = c;
+      if (!value) return respondNotFound(ctx as Ctx, 'championships');
       const overview = asOverview<Record<string, unknown>>(value);
-      if (!overview || (!type && page === 1 && size === DEFAULT_PAGE_SIZE)) return value;
-      return paginate(overview.items, page, size);
+      const body: Json =
+        overview && (type || page !== 1 || size !== DEFAULT_PAGE_SIZE)
+          ? (paginate(overview.items, page, size) as unknown as Json)
+          : value;
+      return send(ctx as Ctx, body, c, resourcePolicy(CACHE_TTL.resource));
     })
-    .get('/v1/championships/:id', async ({ params, set }) => {
-      const { value, cache: c } = await loadRequired(staticPaths.championshipById(params.id));
-      if (!value) return respondNotFound(set,'championship', params.id);
-      set.headers['x-cache'] = c;
-      return value;
+    .get('/v1/championships/:id', async (ctx) => {
+      const { params } = ctx as unknown as { params: { id: string } };
+      const { value, cache: c } = await loadRequired(
+        staticPaths.championshipById(params.id),
+      );
+      if (!value) return respondNotFound(ctx as Ctx, 'championship', params.id);
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.resource));
     })
-    .get('/v1/persons', async ({ query, set }) => {
+    .get('/v1/persons', async (ctx) => {
+      const { query } = ctx as unknown as {
+        query: Record<string, string | undefined>;
+      };
       const page = pageFrom(query);
       const size = Number(query.size ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE;
       const path = staticPaths.personsPage(page);
       const { value, cache: c } = await loadRequired(path);
-      if (!value) return respondNotFound(set,'persons');
-      set.headers['x-cache'] = c;
+      if (!value) return respondNotFound(ctx as Ctx, 'persons');
       const overview = asOverview<Record<string, unknown>>(value);
-      if (!overview || (page === 1 && size === DEFAULT_PAGE_SIZE)) return value;
-      return paginate(overview.items, page, size);
+      const body: Json =
+        overview && (page !== 1 || size !== DEFAULT_PAGE_SIZE)
+          ? (paginate(overview.items, page, size) as unknown as Json)
+          : value;
+      return send(ctx as Ctx, body, c, resourcePolicy(CACHE_TTL.resource));
     })
-    .get('/v1/persons/:id', async ({ params, set }) => {
+    .get('/v1/persons/:id', async (ctx) => {
+      const { params } = ctx as unknown as { params: { id: string } };
       const path = config.personSharded
         ? staticPaths.personShardById(params.id)
         : staticPaths.personById(params.id);
       const { value, cache: c } = await loadRequired(path);
-      if (!value) return respondNotFound(set,'person', params.id);
-      set.headers['x-cache'] = c;
-      return value;
+      if (!value) return respondNotFound(ctx as Ctx, 'person', params.id);
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.resource));
     })
-    .get('/v1/ranks/:region/:type/:eventId', async ({ params, query, set }) => {
+    .get('/v1/ranks/:region/:type/:eventId', async (ctx) => {
+      const { params, query } = ctx as unknown as {
+        params: { region: string; type: string; eventId: string };
+        query: Record<string, string | undefined>;
+      };
       const type = params.type;
       if (type !== 'single' && type !== 'average') {
-        return respondBadRequest(set,"type must be 'single' or 'average'");
+        return respondBadRequest(ctx as Ctx, "type must be 'single' or 'average'");
       }
       const page = pageFrom(query);
       const size = Number(query.size ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE;
       const path = staticPaths.rank(params.region, type, params.eventId);
       const { value, cache: c } = await loadRequired(path);
-      if (!value) return respondNotFound(set,'rank', `${params.region}/${type}/${params.eventId}`);
-      set.headers['x-cache'] = c;
+      if (!value) {
+        return respondNotFound(ctx as Ctx, 'rank', `${params.region}/${type}/${params.eventId}`);
+      }
       const overview = asOverview<Record<string, unknown>>(value);
-      if (!overview || (page === 1 && size === DEFAULT_PAGE_SIZE)) return value;
-      return paginate(overview.items, page, size);
+      const body: Json =
+        overview && (page !== 1 || size !== DEFAULT_PAGE_SIZE)
+          ? (paginate(overview.items, page, size) as unknown as Json)
+          : value;
+      return send(ctx as Ctx, body, c, resourcePolicy(CACHE_TTL.derived));
     })
-    .get('/v1/results/:competitionId', async ({ params, set }) => {
+    .get('/v1/results/:competitionId', async (ctx) => {
+      const { params } = ctx as unknown as { params: { competitionId: string } };
       const { value, cache: c } = await loadRequired(
         staticPaths.resultsByCompetition(params.competitionId),
       );
-      if (!value) return respondNotFound(set,'results', params.competitionId);
-      set.headers['x-cache'] = c;
-      return value;
+      if (!value) return respondNotFound(ctx as Ctx, 'results', params.competitionId);
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.resource));
     })
-    .get('/v1/results/:competitionId/:eventId', async ({ params, set }) => {
+    .get('/v1/results/:competitionId/:eventId', async (ctx) => {
+      const { params } = ctx as unknown as {
+        params: { competitionId: string; eventId: string };
+      };
       const { value, cache: c } = await loadRequired(
         staticPaths.resultsByCompetitionEvent(params.competitionId, params.eventId),
       );
       if (!value) {
-        return respondNotFound(set,'results', `${params.competitionId}/${params.eventId}`);
+        return respondNotFound(
+          ctx as Ctx,
+          'results',
+          `${params.competitionId}/${params.eventId}`,
+        );
       }
-      set.headers['x-cache'] = c;
-      return value;
+      return send(ctx as Ctx, value, c, resourcePolicy(CACHE_TTL.resource));
     })
-    .onError(({ code, error, set }) => {
+    .onError(({ code, error, set, request }) => {
+      const ctx = { set, request } as Ctx;
       if (code === 'NOT_FOUND') {
-        set.status = 404;
-        return {
-          error: {
-            code: 'NOT_FOUND',
-            message: 'Resource not found',
+        return respondJson(ctx, {
+          body: {
+            error: {
+              code: 'NOT_FOUND',
+              message: 'Resource not found',
+            },
           },
-        };
+          status: 404,
+          cache: 'MISS',
+          policy: resourcePolicy(),
+        });
       }
-      set.status = 500;
-      return {
-        error: {
-          code: 'INTERNAL',
-          message: error instanceof Error ? error.message : 'Internal error',
+      return respondJson(ctx, {
+        body: {
+          error: {
+            code: 'INTERNAL',
+            message: error instanceof Error ? error.message : 'Internal error',
+          },
         },
-      };
+        status: 500,
+        cache: 'MISS',
+        policy: healthPolicy(),
+      });
     });
 
   function classify(id: string): 'year' | 'country' | 'event' | 'id' {
@@ -344,4 +420,3 @@ export function createApp(deps: AppDeps) {
 
   return app;
 }
-

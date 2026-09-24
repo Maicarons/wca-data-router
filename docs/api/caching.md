@@ -13,8 +13,11 @@ The router caches hot reads **in process** so repeated requests avoid re-reading
 
 ## Response headers
 
+- `ETag` — weak FNV-1a of the response body (stable across processes)
+- `If-None-Match` — returns `304 Not Modified` on match
 - `X-Cache: HIT|MISS`
-- `Cache-Control: public, max-age=…` on hot metadata routes
+- `Cache-Control: public, max-age=…` (+ `s-maxage`) on JSON routes; `/health` is `private, no-store`
+- `Vary: origin, accept-encoding`
 
 ## Configuration (env)
 

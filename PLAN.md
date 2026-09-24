@@ -1,8 +1,10 @@
 # WCA Data Router — 项目开发方案
 
-> 版本：v0.1（审阅稿）
-> 状态：**待确认，未开始实现**
+> 版本：v0.1（已实现）
+> 状态：**已落地，契约随 v0.1.0 冻结**
 > 日期：2026-09-24
+>
+> 实现进度见 `CHANGELOG.md`；本文保留架构决策与目标，结构树以仓库实际为准（`builders/mappers.ts` 统一映射，无独立 `schema.ts` / `util/` / `routes/` 目录）。
 
 ---
 
@@ -177,114 +179,24 @@ flowchart TB
 
 ```text
 wca-data-router/
-├── .github/
-│   ├── workflows/
-│   │   ├── ci.yml                 # PR/push：lint + typecheck + unit test
-│   │   ├── build-api.yml          # 每日构建静态 API 并发布 api 分支
-│   │   └── deploy-docs.yml        # VitePress → GitHub Pages
-│   ├── ISSUE_TEMPLATE/
-│   └── PULL_REQUEST_TEMPLATE.md
-├── docs/                          # VitePress 站点源码
-│   ├── .vitepress/
-│   │   ├── config.ts
-│   │   └── theme/
-│   ├── public/
-│   ├── guide/
-│   │   ├── introduction.md
-│   │   ├── quick-start.md
-│   │   ├── data-model.md
-│   │   ├── static-layout.md
-│   │   └── migration-from-v1.md   # 相对 wca-rest-api 的差异
-│   ├── api/
-│   │   ├── overview.md
-│   │   ├── general.md
-│   │   ├── competition.md
-│   │   ├── championship.md
-│   │   ├── person.md
-│   │   ├── rank.md
-│   │   ├── result.md
-│   │   └── router.md              # REST 路由
-│   ├── deploy/
-│   │   ├── github-pages.md
-│   │   ├── vercel.md
-│   │   └── self-hosted.md
-│   ├── openapi.yml                # 或从 router 生成
-│   └── index.md
+├── .github/workflows/            # ci.yml · build-api.yml · deploy-docs.yml
+├── docs/                         # VitePress（guide / api / deploy / develop + openapi.yml）
 ├── packages/
-│   ├── shared/                    # 共享类型、路径映射、常量、Overview 约定
-│   │   ├── src/
-│   │   │   ├── types.ts
-│   │   │   ├── overview.ts
-│   │   │   ├── paths.ts           # 静态路径 ↔ 资源映射（单一事实来源）
-│   │   │   └── version.ts
-│   │   └── package.json
-│   ├── builder/                   # 静态 API 构建器（CLI）
-│   │   ├── src/
-│   │   │   ├── cli.ts
-│   │   │   ├── pipeline.ts
-│   │   │   ├── ingest/
-│   │   │   │   ├── download.ts
-│   │   │   │   ├── tsv.ts
-│   │   │   │   └── schema.ts      # 表结构（v2.0.2）
-│   │   │   ├── store/
-│   │   │   │   └── memory-store.ts
-│   │   │   ├── builders/
-│   │   │   │   ├── continent.ts
-│   │   │   │   ├── country.ts
-│   │   │   │   ├── event.ts
-│   │   │   │   ├── competition.ts
-│   │   │   │   ├── championship.ts
-│   │   │   │   ├── person.ts
-│   │   │   │   ├── rank.ts
-│   │   │   │   ├── result.ts
-│   │   │   │   └── version.ts
-│   │   │   ├── emit/
-│   │   │   │   ├── json-writer.ts
-│   │   │   │   └── overview.ts
-│   │   │   └── util/
-│   │   │       ├── progress.ts
-│   │   │       ├── slug.ts
-│   │   │       └── solves.ts      # result_attempts → solves[5]
-│   │   ├── test/
-│   │   └── package.json
-│   └── router/                    # REST 服务
-│       ├── src/
-│       │   ├── index.ts
-│       │   ├── app.ts
-│       │   ├── config.ts
-│       │   ├── routes/
-│       │   │   ├── health.ts
-│       │   │   ├── meta.ts        # /v1/version
-│       │   │   ├── general.ts
-│       │   │   ├── competitions.ts
-│       │   │   ├── championships.ts
-│       │   │   ├── persons.ts
-│       │   │   ├── ranks.ts
-│       │   │   └── results.ts
-│       │   ├── cache/
-│       │   │   ├── lru.ts         # LRU + TTL + 负缓存
-│       │   │   └── keys.ts
-│       │   ├── datasource/
-│       │   │   ├── static-source.ts  # 本地目录 / HTTP 静态源
-│       │   │   └── resolve.ts        # 路径解析（复用 shared/paths）
-│       │   └── openapi.ts
-│       ├── test/
-│       └── package.json
-├── api/                           # 构建输出（.gitignore；由 CI 发布到 api 分支）
-├── scripts/
-│   ├── check-export-version.mjs
-│   └── verify-static-samples.mjs
-├── .gitignore
-├── .editorconfig
-├── LICENSE                        # Apache-2.0（与参考项目一致）
-├── README.md
-├── PLAN.md                        # 本文件
-├── package.json                   # pnpm workspace 根
-├── pnpm-workspace.yaml
-├── tsconfig.base.json
-└── biome.json                     # 或 eslint.config.js + prettier
+│   ├── shared/                   # types · overview · paths · version
+│   ├── builder/                  # CLI + pipeline + ingest/store/mappers/emit
+│   │   ├── src/builders/mappers.ts   # 全部实体映射（单一模块）
+│   │   ├── src/ingest/               # download · parallel-download · resolve-download · load · tsv · stream
+│   │   ├── src/emit/json-writer.ts   # 并发 JSON 写出
+│   │   └── test/                     # fixture 微缩 export 集成测试
+│   └── router/                   # Elysia REST + MemoryCache + StaticSource + openapi
+├── scripts/                      # check-export-version.mjs · verify-static-samples.mjs
+├── CHANGELOG.md
+├── PLAN.md · README.md · README_ZH.md
+├── package.json · bun.lock · tsconfig.base.json
+└── LICENSE
 ```
 
+> `api/` 为构建输出，只进 orphan 分支 `api`，不进 `main`。
 > `ref/wca-rest-api/` 仅本地阅读参考，**不进入仓库**。
 
 ---
@@ -639,18 +551,17 @@ location /v1/     { proxy_pass http://127.0.0.1:3000; }
 
 ## 13. 实施里程碑
 
-| 阶段 | 内容 | 交付物 | 预估 |
+| 阶段 | 内容 | 交付物 | 状态 |
 |------|------|--------|------|
-| **M0 脚手架** | pnpm monorepo、TS、Biome、Vitest、LICENSE、README 骨架 | 可 install/ lint / test | 0.5d |
-| **M1 shared 契约** | types、Overview、paths 映射、version 类型 | `@wca/shared` | 0.5d |
-| **M2 builder 核心** | 下载、TSV 解析、MemoryStore、continent/country/event/version | 小实体静态文件 | 1d |
-| **M3 builder 全量** | competition/championship/person/rank/result + 并行写出 + manifest | `api/` 全量产物 | 2–3d |
-| **M4 router** | REST 路由、StaticSource、响应缓存、错误契约、OpenAPI | 可运行服务 | 1.5–2d |
-| **M5 CI 发布** | ci.yml / build-api.yml / deploy-docs.yml、版本短路 | 每日自动更新链路 | 1d |
-| **M6 文档** | VitePress 全量文档 + 部署手册 + 迁移指南 | 文档站 | 1.5d |
-| **M7 硬化** | fixture 回归、性能压测、部署 profile（lite/full）、打 tag | v0.1.0 | 1d |
-
-总计约 **9–11 人日**。
+| **M0 脚手架** | Bun workspace、TS、Vitest→bun test、LICENSE、README | install / typecheck / test | ✅ |
+| **M1 shared 契约** | types、Overview、paths 映射、version 类型 | `@wca/shared` | ✅ |
+| **M2 builder 核心** | 下载、TSV 解析、MemoryStore、小实体 | 静态文件 | ✅ |
+| **M3 builder 全量** | competition/championship/person/rank/result + 并发写出 + manifest | `api/` 全量产物 | ✅ |
+| **M4 router** | REST、StaticSource、响应缓存、错误契约、OpenAPI、ETag/Cache-Control | 可运行服务 | ✅ |
+| **M5 CI 发布** | ci.yml / build-api.yml / deploy-docs.yml、版本短路 | 每日自动更新 | ✅ |
+| **M6 文档** | VitePress + 部署手册 + 迁移指南 | 文档站 | ✅ |
+| **M7 硬化** | fixture 回归、并发写出性能、ETag 契约、CHANGELOG、tag | **v0.1.0** | ✅ |
+| **M8+（后续）** | api-lite profile、增量重建、`persons/{id}/results.json`、Docker | v0.2 | 未开始 |
 
 ---
 

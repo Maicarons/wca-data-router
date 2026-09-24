@@ -3,6 +3,11 @@ import { MemoryCache } from '../src/cache/lru';
 import { createApp } from '../src/app';
 import { loadConfig } from '../src/config';
 import type { StaticSource } from '../src/datasource/static-source';
+import {
+  cacheControlFor,
+  etagFor,
+  ifNoneMatchHits,
+} from '../src/http';
 
 class MapSource implements StaticSource {
   constructor(private readonly data: Map<string, unknown>) {}
@@ -139,5 +144,64 @@ describe('router app', () => {
     const beBody = (await be.json()) as { total: number; items: Array<{ id: string }> };
     expect(beBody.total).toBe(1);
     expect(beBody.items[0]?.id).toBe('A');
+  });
+
+  test('sets ETag and Cache-Control and honors If-None-Match', async () => {
+    const data = new Map<string, unknown>([
+      ['persons/2012TEST01.json', { id: '2012TEST01', name: 'Test' }],
+      ['countries.json', { pagination: { page: 1, size: 1 }, total: 1, items: [{ iso2Code: 'BE' }] }],
+      ['version.json', { export_date: '2026-09-23', export_format_version: '2.0.2' }],
+      ['events.json', { pagination: { page: 1, size: 1 }, total: 1, items: [{ id: '333' }] }],
+    ]);
+    const app = createApp({
+      config: loadConfig({}),
+      source: new MapSource(data),
+    });
+
+    const res = await app.handle(new Request('http://local/v1/persons/2012TEST01'));
+    expect(res.status).toBe(200);
+    const etag = res.headers.get('etag');
+    expect(etag).toBeTruthy();
+    expect(etag).toMatch(/^W\/"[0-9a-f]+"$/);
+    const cc = res.headers.get('cache-control') ?? '';
+    expect(cc).toContain('public');
+    expect(cc).toContain('max-age=');
+    expect(res.headers.get('x-cache')).toBe('MISS');
+
+    const cached = await app.handle(new Request('http://local/v1/persons/2012TEST01'));
+    expect(cached.headers.get('x-cache')).toBe('HIT');
+    expect(cached.headers.get('etag')).toBe(etag);
+
+    const revalidated = await app.handle(
+      new Request('http://local/v1/persons/2012TEST01', {
+        headers: { 'if-none-match': etag as string },
+      }),
+    );
+    expect(revalidated.status).toBe(304);
+    expect(revalidated.headers.get('etag')).toBe(etag);
+
+    const countries = await app.handle(new Request('http://local/v1/countries'));
+    expect(countries.status).toBe(200);
+    expect(countries.headers.get('etag')).toBeTruthy();
+    expect(countries.headers.get('cache-control')).toContain('max-age=');
+
+    const health = await app.handle(new Request('http://local/health'));
+    expect(health.status).toBe(200);
+    expect(health.headers.get('cache-control')).toContain('no-store');
+  });
+
+  test('etagFor is stable and if-none-match handles list and weak tags', () => {
+    expect(etagFor({ a: 1 })).toBe(etagFor({ a: 1 }));
+    expect(etagFor({ a: 1 })).not.toBe(etagFor({ a: 2 }));
+    const tag = etagFor('x');
+    expect(ifNoneMatchHits(tag, tag)).toBe(true);
+    expect(ifNoneMatchHits(`W/${tag.replace(/^W\//, '')}`, tag)).toBe(true);
+    expect(ifNoneMatchHits(`"nope", ${tag}`, tag)).toBe(true);
+    expect(ifNoneMatchHits('*', tag)).toBe(true);
+    expect(ifNoneMatchHits('"nope"', tag)).toBe(false);
+    expect(ifNoneMatchHits(null, tag)).toBe(false);
+    expect(cacheControlFor({ maxAge: 60 })).toBe('public, max-age=60');
+    expect(cacheControlFor({ maxAge: 60, sMaxAge: 300 })).toBe('public, max-age=60, s-maxage=300');
+    expect(cacheControlFor({ maxAge: 0, noStore: true })).toBe('private, no-store');
   });
 });

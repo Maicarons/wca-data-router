@@ -201,7 +201,7 @@ export async function buildApi(options: BuildOptions): Promise<{
     }
 
     // by id + filters
-    await mapPool(comps, 32, async (comp) => {
+    await mapPool(comps, 64, async (comp) => {
       await count(staticPaths.competitionById(comp.id), comp);
     });
 
@@ -280,9 +280,9 @@ export async function buildApi(options: BuildOptions): Promise<{
         items: slice,
       });
     }
-    for (const champ of champs) {
+    await mapPool(champs, 32, async (champ) => {
       await count(staticPaths.championshipById(champ.id), champ);
-    }
+    });
     const byType = new Map<string, typeof champs>();
     for (const champ of champs) {
       pushArr(byType, champ.region, champ);
@@ -296,42 +296,47 @@ export async function buildApi(options: BuildOptions): Promise<{
     }
   }
 
-  // --- persons ---
+  // --- persons / ranks / results run concurrently (read-only store, disjoint writes) ---
+  const heavy: Promise<void>[] = [];
+
   if (only.has('person')) {
-    const ids = [...store.persons.keys()].sort();
-    // prefer primary sub_id = 1
-    const primaryIds = ids.filter((id) => (store.persons.get(id)?.subId ?? 1) === 1);
-    const listIds = primaryIds.length ? primaryIds : ids;
-    const summaries: PersonSummary[] = [];
-    for (const id of listIds) {
-      const s = personSummary(store, id);
-      if (s) summaries.push(s);
-    }
-    resources.persons = summaries.length;
+    heavy.push((async () => {
+      const ids = [...store.persons.keys()].sort();
+      // prefer primary sub_id = 1
+      const primaryIds = ids.filter((id) => (store.persons.get(id)?.subId ?? 1) === 1);
+      const listIds = primaryIds.length ? primaryIds : ids;
+      const summaries: PersonSummary[] = [];
+      for (const id of listIds) {
+        const s = personSummary(store, id);
+        if (s) summaries.push(s);
+      }
+      resources.persons = summaries.length;
 
-    const pages = Math.max(1, Math.ceil(summaries.length / pageSize));
-    for (let page = 1; page <= pages; page++) {
-      const slice = summaries.slice((page - 1) * pageSize, page * pageSize);
-      await count(staticPaths.personsPage(page), {
-        pagination: { page, size: slice.length || pageSize },
-        total: summaries.length,
-        items: slice,
+      const pages = Math.max(1, Math.ceil(summaries.length / pageSize));
+      for (let page = 1; page <= pages; page++) {
+        const slice = summaries.slice((page - 1) * pageSize, page * pageSize);
+        await count(staticPaths.personsPage(page), {
+          pagination: { page, size: slice.length || pageSize },
+          total: summaries.length,
+          items: slice,
+        });
+      }
+
+      await mapPool(listIds, 64, async (id) => {
+        const person = mapPerson(store, id);
+        if (!person) return;
+        const rel = options.personSharded
+          ? staticPaths.personShardById(id)
+          : staticPaths.personById(id);
+        await writer.write(rel, person);
+        files++;
       });
-    }
-
-    await mapPool(listIds, 48, async (id) => {
-      const person = mapPerson(store, id);
-      if (!person) return;
-      const rel = options.personSharded
-        ? staticPaths.personShardById(id)
-        : staticPaths.personById(id);
-      await writer.write(rel, person);
-      files++;
-    });
+    })());
   }
 
   // --- ranks ---
   if (only.has('rank')) {
+    heavy.push((async () => {
     const continents = mapContinent(store);
     const countries = mapCountries(store);
     const events = mapEvents(store);
@@ -399,34 +404,39 @@ export async function buildApi(options: BuildOptions): Promise<{
       }
     }
     resources.rankFiles = rankFiles;
+    })());
   }
 
   // --- results ---
   if (only.has('result')) {
-    let resultFiles = 0;
-    await mapPool([...store.competitions.keys()], 16, async (competitionId) => {
-      const items = mapResultsForCompetition(store, competitionId);
-      if (!items.length) return;
-      await count(staticPaths.resultsByCompetition(competitionId), {
-        pagination: { page: 1, size: items.length },
-        total: items.length,
-        items,
-      });
-      resultFiles++;
-
-      const byEvent = new Map<string, typeof items>();
-      for (const item of items) pushArr(byEvent, item.eventId, item);
-      for (const [eventId, list] of byEvent) {
-        await count(staticPaths.resultsByCompetitionEvent(competitionId, eventId), {
-          pagination: { page: 1, size: list.length },
-          total: list.length,
-          items: list,
+    heavy.push((async () => {
+      let resultFiles = 0;
+      await mapPool([...store.competitions.keys()], 48, async (competitionId) => {
+        const items = mapResultsForCompetition(store, competitionId);
+        if (!items.length) return;
+        await count(staticPaths.resultsByCompetition(competitionId), {
+          pagination: { page: 1, size: items.length },
+          total: items.length,
+          items,
         });
         resultFiles++;
-      }
-    });
-    resources.resultFiles = resultFiles;
+
+        const byEvent = new Map<string, typeof items>();
+        for (const item of items) pushArr(byEvent, item.eventId, item);
+        for (const [eventId, list] of byEvent) {
+          await count(staticPaths.resultsByCompetitionEvent(competitionId, eventId), {
+            pagination: { page: 1, size: list.length },
+            total: list.length,
+            items: list,
+          });
+          resultFiles++;
+        }
+      });
+      resources.resultFiles = resultFiles;
+    })());
   }
+
+  await Promise.all(heavy);
 
   if (only.has('version') || true) {
     await count(staticPaths.version(), version);

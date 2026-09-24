@@ -6,21 +6,20 @@ export interface JsonWriter {
   outDir: string;
 }
 
+/** Concurrent JSON file writer. Writes are independent; mkdir is cached per directory. */
 export function createJsonWriter(outDir: string): JsonWriter {
-  let chain: Promise<unknown> = Promise.resolve();
-  const write = (relPath: string, data: unknown): Promise<void> => {
-    const task = async () => {
-      const full = join(outDir, relPath);
-      await mkdir(dirname(full), { recursive: true });
-      await Bun.write(full, JSON.stringify(data));
-    };
-    chain = chain.then(task, task);
-    return chain.then(() => undefined);
-  };
+  const ensuredDirs = new Set<string>();
+
   return {
     outDir,
-    write: async (relPath, data) => {
-      await write(relPath, data);
+    write: async (relPath: string, data: unknown) => {
+      const full = join(outDir, relPath);
+      const dir = dirname(full);
+      if (!ensuredDirs.has(dir)) {
+        await mkdir(dir, { recursive: true });
+        ensuredDirs.add(dir);
+      }
+      await Bun.write(full, JSON.stringify(data));
     },
   };
 }
