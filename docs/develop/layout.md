@@ -3,7 +3,7 @@
 ```text
 wca-data-router/
 ├── .github/workflows/     # ci, build-api (api branch), deploy-docs
-├── docs/                  # VitePress (English)
+├── docs/                  # VitePress (English + 中文 under zh/)
 ├── packages/
 │   ├── shared/            # types, overview helpers, static path map
 │   ├── builder/           # TSV → static JSON generator
